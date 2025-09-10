@@ -51,6 +51,74 @@ def load_config(path="config.yaml"):
     except Exception as e:
         logging.error(f"FATAL: Error loading configuration file: {e}"); return None
 
+# --- NEW HELPER FUNCTION FOR ANCILLARY UPDATES ---
+def update_ancillary_tables(config, connector, catalogue_df, successful_updates):
+    """
+    Updates the status and timestamp in ancillary tables based on successfully scraped items.
+    """
+    ancillary_config = config.get('ancillary_table_updates', [])
+    if not ancillary_config:
+        logging.info("No ancillary tables configured for updates.")
+        return
+
+    active_asins = {update['ASIN'] for update in successful_updates}
+    if not active_asins:
+        logging.info("No successful scrapes to use for ancillary updates.")
+        return
+        
+    asin_to_msku = catalogue_df.set_index('Marketplace ASIN/Product ID')['msku'].to_dict()
+    active_mskus = {asin_to_msku.get(asin) for asin in active_asins if asin_to_msku.get(asin)}
+
+    logging.info(f"Found {len(active_asins)} active ASINs and {len(active_mskus)} corresponding MSKUs for ancillary updates.")
+
+    current_timestamp = datetime.now().isoformat() # Get a single timestamp for this run
+
+    for table_config in ancillary_config:
+        if not table_config.get('enabled'):
+            logging.info(f"Skipping ancillary table '{table_config.get('name')}' as it is disabled.")
+            continue
+
+        name = table_config.get('name')
+        table_id = table_config.get('table_id')
+        match_col = table_config.get('match_column')
+
+        if not all([name, table_id, match_col]):
+            logging.error(f"Skipping ancillary table due to incomplete configuration: {table_config}")
+            continue
+
+        logging.info(f"--- Processing ancillary table: {name} ---")
+        df_to_update = connector.get_table_as_dataframe(table_id)
+        if df_to_update.empty:
+            logging.warning(f"Table '{name}' is empty, skipping update.")
+            continue
+        
+        if match_col == 'Asin':
+            rows_to_activate = df_to_update[df_to_update[match_col].isin(active_asins)]
+        elif match_col == 'Msku':
+            rows_to_activate = df_to_update[
+                (df_to_update[match_col].isin(active_mskus)) &
+                (df_to_update['Panel'] == 'Amazon')
+            ]
+        else:
+            logging.warning(f"Unknown match_column '{match_col}' for table '{name}'. Skipping.")
+            continue
+
+        if not rows_to_activate.empty:
+            ids_to_update = rows_to_activate['id'].tolist()
+            
+            # --- THIS IS THE ONLY CHANGE ---
+            # The payload now includes the 'Last Enriched At' timestamp.
+            payload = [{'id': row_id, 'Status': 'Active', 'Last Enriched At': current_timestamp} for row_id in ids_to_update]
+            
+            logging.info(f"Found {len(ids_to_update)} rows in '{name}' to update to 'Active'.")
+            
+            if connector.update_rows(table_id, payload):
+                logging.info(f"✅ Successfully updated status in '{name}'.")
+            else:
+                logging.error(f"❌ Failed to update status in '{name}'.")
+        else:
+            logging.info(f"No matching rows found in '{name}' to update.")
+
 def main(start_time):
     """Main function to run the enrichment process."""
     logging.info("🚀 Starting the Standalone Catalog Enrichment Scraper...")
@@ -149,15 +217,18 @@ def main(start_time):
                 payload_item['All Image URLs'] = update['Image URLs']
                 first_image = update['Image URLs'].split(',')[0].strip()
                 payload_item['Product Image 1'] = first_image
-            final_payload.append(payload_item)
+            final_payload.append(update)
         
         logging.info(f"\nSending {len(final_payload)} updates to Baserow...")
         if connector.update_rows(table_id, final_payload):
-            logging.info("✅ Success! Baserow has been updated.")
+            logging.info("✅ Success! Main Catalogue table has been updated.")
         else:
-            logging.error("❌ Failed to update Baserow.")
+            logging.error("❌ Failed to update main Catalogue table")
     else:
-        logging.info("No new data to update in Baserow.")
+        logging.info("No new data to update in main Catalogue table.")
+
+    successful_updates = [u for u in updates_to_send if u.get('Enrichment Status', 'Success') in ['Success', 'Success (on retry)']]
+    update_ancillary_tables(config, connector, catalogue_df, successful_updates)
 
     end_time = datetime.now()
     logging.info(f"Enrichment process finished. Total runtime: {end_time - start_time}")
