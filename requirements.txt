@@ -1,0 +1,8 @@
+# Catalog_Enrichment_Scraper/requirements.txt
+# Minimal dependencies for the standalone scraper application
+
+pandas
+selenium
+webdriver-manager
+requests
+PyYAML

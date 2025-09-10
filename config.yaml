@@ -1,0 +1,27 @@
+# Catalog_Enrichment_Scraper/config.yaml
+# Configuration for the Standalone Enrichment Scraper
+
+baserow:
+  # The base URL of your self-hosted Baserow instance
+  base_url: "http://129.159.18.115:49161"
+  
+  # Your Baserow API token (keep this secure)
+  api_token: "PfMJRl1I6CVwHPPLQ578vHmxvCR6fVMB" # <-- ACTION: Verify this is correct
+
+  # The numeric ID of the 'Catalogue' table to read from and update
+  catalogue_table_id: 722
+
+scraper:
+  # The Amazon domain to scrape (e.g., amazon.in, amazon.com)
+  domain: "amazon.in"
+  
+  # The minimum and maximum random delay (in seconds) between scraping requests
+  # This helps avoid getting blocked by appearing more human.
+  min_delay_seconds: 2.5
+  max_delay_seconds: 5.5
+
+  # Maximum number of items to scrape in a single run.
+  # Set to 0 to process all available items.
+  # Ideal for running quick tests with a small batch.
+  max_items_to_scrape: 0
+
