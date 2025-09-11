@@ -23,7 +23,7 @@ scraper:
   # Maximum number of items to scrape in a single run.
   # Set to 0 to process all available items.
   # Ideal for running quick tests with a small batch.
-  max_items_to_scrape: 50
+  max_items_to_scrape: 0
 
 # Configure additional tables to update with the 'Active' status after a successful scrape.
 ancillary_table_updates:

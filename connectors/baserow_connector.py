@@ -47,13 +47,30 @@ class BaserowConnector:
         return df
 
     def update_rows(self, table_id, rows_data):
+        """
+        Updates one or more rows in a Baserow table, automatically handling batching.
+        """
+        if not rows_data:
+            logger.info("No rows data provided to update.")
+            return True # Consider it a success if there's nothing to do
+
         url = f"{self.base_url}/api/database/rows/table/{table_id}/batch/?user_field_names=true"
-        payload = {"items": rows_data}
-        try:
-            response = requests.patch(url, headers=self.headers, json=payload)
-            response.raise_for_status()
-            logger.info(f"Successfully updated {len(rows_data)} row(s) in table {table_id}.")
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to update rows in table {table_id}: {e} - Response: {e.response.text}")
-            return None
+        batch_size = 200  # Baserow's hard limit
+        overall_success = True
+
+        for i in range(0, len(rows_data), batch_size):
+            chunk = rows_data[i:i + batch_size]
+            payload = {"items": chunk}
+            
+            logger.info(f"Updating chunk {i//batch_size + 1}/{(len(rows_data)-1)//batch_size + 1} with {len(chunk)} items...")
+            
+            try:
+                response = requests.patch(url, headers=self.headers, json=payload)
+                response.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Failed to update chunk in table {table_id}: {e} - Response: {e.response.text}")
+                overall_success = False
+                # Optionally, you could stop here or continue with other chunks
+                # For now, we'll log the error and continue
+        
+        return overall_success

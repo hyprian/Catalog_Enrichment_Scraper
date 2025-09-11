@@ -50,6 +50,24 @@ def load_config(path="config.yaml"):
         logging.error(f"FATAL: Configuration file not found at '{path}'."); return None
     except Exception as e:
         logging.error(f"FATAL: Error loading configuration file: {e}"); return None
+    
+# --- NEW: Checkpoint Functions ---
+CHECKPOINT_FILE = "checkpoint.json"
+
+def save_checkpoint(processed_asins):
+    """Saves the list of processed ASINs to a file."""
+    with open(CHECKPOINT_FILE, 'w') as f:
+        json.dump(list(processed_asins), f)
+    logging.info(f"Checkpoint saved. {len(processed_asins)} ASINs processed so far.")
+
+def load_checkpoint():
+    """Loads the list of processed ASINs from a file if it exists."""
+    if os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE, 'r') as f:
+            processed_asins = set(json.load(f))
+            logging.warning(f"Checkpoint file found. Resuming from last run. {len(processed_asins)} ASINs will be skipped.")
+            return processed_asins
+    return set()
 
 # --- NEW HELPER FUNCTION FOR ANCILLARY UPDATES ---
 def update_ancillary_tables(config, connector, catalogue_df, successful_updates):
@@ -139,7 +157,15 @@ def main(start_time):
     if catalogue_df.empty:
         logging.warning("The Catalogue table is empty. Nothing to process."); return
             
-    asins_to_scrape = catalogue_df[catalogue_df['Marketplace ASIN/Product ID'].notna()].copy()
+    asins_to_scrape = catalogue_df[
+        catalogue_df['Marketplace ASIN/Product ID'].notna() &
+        (catalogue_df['Marketplace ASIN/Product ID'].str.strip() != '')
+    ].copy()
+
+    processed_asins = load_checkpoint()
+    if processed_asins:
+        asins_to_scrape = asins_to_scrape[~asins_to_scrape['Marketplace ASIN/Product ID'].isin(processed_asins)]
+
     
     # --- Apply the scrape limit from config ---
     scrape_limit = config.get('scraper', {}).get('max_items_to_scrape', 0)
@@ -150,6 +176,12 @@ def main(start_time):
         logging.info("Processing all available items.")
     
     logging.info(f"Processing a total of {len(asins_to_scrape)} listings.")
+
+    if asins_to_scrape.empty:
+        logging.info("No new items to process. Exiting.")
+        if os.path.exists(CHECKPOINT_FILE): os.remove(CHECKPOINT_FILE) # Clean up if nothing to do
+        return
+
     
     # --- 2. Initialize the Scraper ---
     scraper = AmazonScraper(config=config.get('scraper', {}))
@@ -157,6 +189,7 @@ def main(start_time):
 
     updates_to_send = []
     failed_asins_for_retry = []
+    checkpoint_counter = 0
     
     try:
         # --- 3. First Scraping Pass ---
@@ -173,9 +206,18 @@ def main(start_time):
                     updates_to_send.append(product_data)
                 else: 
                     raise ValueError("Scrape returned no title (but page was found).")
+                processed_asins.add(asin)
+                checkpoint_counter += 1
             except Exception as e:
                 logging.warning(f"Could not scrape ASIN {asin} on first pass. Adding to retry list. Error: {e}")
                 failed_asins_for_retry.append({'id': baserow_id, 'ASIN': asin})
+                processed_asins.add(asin) # Also mark failed items as processed so we don't retry them on next full run
+                checkpoint_counter += 1
+
+            # --- NEW: Save checkpoint periodically ---
+            if checkpoint_counter >= 50:
+                save_checkpoint(processed_asins)
+                checkpoint_counter = 0
 
         # --- 4. Retry Pass for Failed ASINs ---
         if failed_asins_for_retry:
@@ -198,6 +240,7 @@ def main(start_time):
                     updates_to_send.append({'id': baserow_id, 'Enrichment Status': 'Scrape Failed'})
     finally:
         scraper.quit_driver()
+        save_checkpoint(processed_asins)
 
     # --- 5. Prepare and Update Baserow ---
     if updates_to_send:
@@ -229,6 +272,10 @@ def main(start_time):
 
     successful_updates = [u for u in updates_to_send if u.get('Enrichment Status', 'Success') in ['Success', 'Success (on retry)']]
     update_ancillary_tables(config, connector, catalogue_df, successful_updates)
+
+    logging.info("Run completed successfully. Deleting checkpoint file.")
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
 
     end_time = datetime.now()
     logging.info(f"Enrichment process finished. Total runtime: {end_time - start_time}")
